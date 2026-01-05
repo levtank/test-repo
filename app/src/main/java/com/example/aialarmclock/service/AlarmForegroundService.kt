@@ -140,7 +140,11 @@ class AlarmForegroundService : Service() {
         }
     }
 
-    fun stopAlarm() {
+    /**
+     * Stop just the alarm sound and vibration, but keep service running.
+     * Used when user says something to stop the ringing before question is asked.
+     */
+    fun stopSound() {
         // Stop sound
         mediaPlayer?.apply {
             if (isPlaying) {
@@ -153,6 +157,14 @@ class AlarmForegroundService : Service() {
         // Stop vibration
         vibrator?.cancel()
         vibrator = null
+    }
+
+    /**
+     * Fully stop the alarm - sound, vibration, and service.
+     * Called when alarm is dismissed after answering the question.
+     */
+    fun stopAlarm() {
+        stopSound()
 
         // Release wake lock
         wakeLock?.let {

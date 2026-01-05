@@ -26,7 +26,13 @@ class SpeechRecognitionManager(private val context: Context) {
         return SpeechRecognizer.isRecognitionAvailable(context)
     }
 
-    fun startListening(listener: SpeechListener) {
+    /**
+     * Start listening for speech.
+     * @param listener Callback for speech events
+     * @param longListen If true, waits longer for response (for question answering).
+     *                   If false, quick detection (for wake phrase).
+     */
+    fun startListening(listener: SpeechListener, longListen: Boolean = false) {
         if (isListening) {
             stopListening()
         }
@@ -87,9 +93,17 @@ class SpeechRecognitionManager(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.US.toString())
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            // Allow longer speech - 10 seconds of silence before stopping
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+
+            if (longListen) {
+                // For question responses - wait up to 1 minute with longer silence tolerance
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5000L)
+            } else {
+                // For wake phrase - quick detection
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            }
         }
 
         speechRecognizer?.startListening(intent)

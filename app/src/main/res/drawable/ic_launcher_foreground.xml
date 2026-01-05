@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Alarm clock icon -->
+    <group android:translateX="24" android:translateY="24">
+        <!-- Clock circle -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M30,6C16.76,6 6,16.76 6,30s10.76,24 24,24 24,-10.76 24,-24S43.24,6 30,6zM30,50c-11.03,0 -20,-8.97 -20,-20s8.97,-20 20,-20 20,8.97 20,20 -8.97,20 -20,20z"/>
+        <!-- Clock hands -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M31,18h-4v14l12,7.2 2,-3.27 -10,-5.93z"/>
+        <!-- Alarm bells -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M43.13,8.13l4.24,-4.24 2.83,2.83 -4.24,4.24zM12.87,6.72L10.04,3.89 5.8,8.13l2.83,2.83z"/>
+    </group>
+</vector>

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
@@ -85,6 +86,9 @@ class AlarmActiveActivity : ComponentActivity() {
         setContent {
             AIAlarmClockTheme {
                 AlarmActiveScreen(
+                    onStopAlarmSound = {
+                        alarmService?.stopSound()
+                    },
                     onDismiss = {
                         dismissAlarm()
                     }
@@ -131,6 +135,7 @@ class AlarmActiveActivity : ComponentActivity() {
 @Composable
 fun AlarmActiveScreen(
     viewModel: AlarmActiveViewModel = viewModel(),
+    onStopAlarmSound: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -148,9 +153,33 @@ fun AlarmActiveScreen(
         }
     }
 
-    // Load question on start
-    LaunchedEffect(Unit) {
-        viewModel.loadQuestion()
+    // Handle RINGING state - listen for wake phrase to stop alarm
+    LaunchedEffect(uiState.state) {
+        if (uiState.state == AlarmState.RINGING) {
+            sttManager.startListening(
+                listener = object : SpeechRecognitionManager.SpeechListener {
+                    override fun onReadyForSpeech() {}
+                    override fun onBeginningOfSpeech() {}
+                    override fun onEndOfSpeech() {}
+
+                    override fun onResult(transcription: String) {
+                        // User said something - stop the alarm sound and proceed
+                        onStopAlarmSound()
+                        viewModel.onWakePhrase(transcription)
+                    }
+
+                    override fun onError(errorCode: Int, errorMessage: String) {
+                        // Restart listening - keep waiting for wake phrase
+                        viewModel.onRingingListenError()
+                    }
+
+                    override fun onPartialResult(partialText: String) {
+                        // Could show what user is saying, but for wake phrase we just wait for result
+                    }
+                },
+                longListen = false // Quick detection for wake phrase
+            )
+        }
     }
 
     // Handle TTS when question is ready
@@ -165,26 +194,29 @@ fun AlarmActiveScreen(
         }
     }
 
-    // Handle STT when ready to listen
+    // Handle STT when ready to listen for question response (up to 1 minute)
     LaunchedEffect(uiState.state) {
         if (uiState.state == AlarmState.LISTENING) {
-            sttManager.startListening(object : SpeechRecognitionManager.SpeechListener {
-                override fun onReadyForSpeech() {}
-                override fun onBeginningOfSpeech() {}
-                override fun onEndOfSpeech() {}
+            sttManager.startListening(
+                listener = object : SpeechRecognitionManager.SpeechListener {
+                    override fun onReadyForSpeech() {}
+                    override fun onBeginningOfSpeech() {}
+                    override fun onEndOfSpeech() {}
 
-                override fun onResult(transcription: String) {
-                    viewModel.onSpeechResult(transcription)
-                }
+                    override fun onResult(transcription: String) {
+                        viewModel.onSpeechResult(transcription)
+                    }
 
-                override fun onError(errorCode: Int, errorMessage: String) {
-                    viewModel.onSpeechError(errorCode, errorMessage)
-                }
+                    override fun onError(errorCode: Int, errorMessage: String) {
+                        viewModel.onSpeechError(errorCode, errorMessage)
+                    }
 
-                override fun onPartialResult(partialText: String) {
-                    viewModel.onPartialResult(partialText)
-                }
-            })
+                    override fun onPartialResult(partialText: String) {
+                        viewModel.onPartialResult(partialText)
+                    }
+                },
+                longListen = true // Wait up to 1 minute for response
+            )
         }
     }
 
@@ -210,6 +242,7 @@ fun AlarmActiveScreen(
             verticalArrangement = Arrangement.Center
         ) {
             when (uiState.state) {
+                AlarmState.RINGING -> RingingState()
                 AlarmState.LOADING -> LoadingState()
                 AlarmState.SPEAKING -> SpeakingState(question = uiState.question)
                 AlarmState.LISTENING -> ListeningState(
@@ -230,6 +263,74 @@ fun AlarmActiveScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun RingingState() {
+    val pulseScale by animateFloatAsState(
+        targetValue = 1.3f,
+        animationSpec = tween(800),
+        label = "alarm_pulse"
+    )
+
+    val alarmColor by animateColorAsState(
+        targetValue = MaterialTheme.colorScheme.error,
+        animationSpec = tween(500),
+        label = "alarm_color"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = Icons.Default.Alarm,
+            contentDescription = "Alarm ringing",
+            modifier = Modifier
+                .size(120.dp)
+                .scale(pulseScale),
+            tint = alarmColor
+        )
+
+        Spacer(modifier = Modifier.height(48.dp))
+
+        Text(
+            text = "ALARM",
+            style = MaterialTheme.typography.displayMedium,
+            color = alarmColor
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text(
+            text = "Say anything to stop",
+            style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "(e.g., \"Good morning\")",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Icon(
+            imageVector = Icons.Default.Mic,
+            contentDescription = "Listening",
+            modifier = Modifier.size(40.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+
+        Text(
+            text = "Listening...",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary
+        )
     }
 }
 

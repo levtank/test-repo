@@ -14,20 +14,22 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 enum class AlarmState {
-    LOADING,           // Generating question
+    RINGING,           // Alarm is ringing, waiting for user to say anything to stop
+    LOADING,           // Generating question (after user stopped ringing)
     SPEAKING,          // TTS is speaking the question
-    LISTENING,         // STT is listening for response
+    LISTENING,         // STT is listening for response (up to 1 minute)
     PROCESSING,        // Processing/saving response
     COMPLETED,         // All done, dismiss alarm
     ERROR              // Something went wrong
 }
 
 data class AlarmActiveUiState(
-    val state: AlarmState = AlarmState.LOADING,
+    val state: AlarmState = AlarmState.RINGING,
     val question: String = "",
     val transcribedResponse: String = "",
     val partialResponse: String = "",
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val wakePhrase: String = "" // What user said to stop the ringing
 )
 
 class AlarmActiveViewModel(application: Application) : AndroidViewModel(application) {
@@ -40,6 +42,25 @@ class AlarmActiveViewModel(application: Application) : AndroidViewModel(applicat
     val uiState: StateFlow<AlarmActiveUiState> = _uiState.asStateFlow()
 
     private var currentQuestion: String = ""
+
+    /**
+     * Called when user says something to stop the ringing (e.g., "good morning")
+     */
+    fun onWakePhrase(phrase: String) {
+        _uiState.value = _uiState.value.copy(
+            wakePhrase = phrase
+        )
+        // Now load the question and stop the alarm sound
+        loadQuestion()
+    }
+
+    /**
+     * Called if speech recognition fails during ringing phase - restart listening
+     */
+    fun onRingingListenError() {
+        // Just restart listening for wake phrase, don't show error
+        _uiState.value = _uiState.value.copy(state = AlarmState.RINGING)
+    }
 
     fun loadQuestion() {
         viewModelScope.launch {
