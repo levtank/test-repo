@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AI Alarm Clock</string>
+    <string name="alarm_notification_channel">Alarm</string>
+    <string name="alarm_notification_title">Alarm!</string>
+    <string name="alarm_notification_text">Answer the question to dismiss</string>
+    <string name="default_question">How are you feeling this morning?</string>
+</resources>
