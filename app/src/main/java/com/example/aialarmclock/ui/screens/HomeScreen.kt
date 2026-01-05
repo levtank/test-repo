@@ -12,10 +12,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -155,6 +158,21 @@ fun HomeScreen(
             Icon(Icons.Default.QuestionAnswer, contentDescription = null)
             Spacer(modifier = Modifier.size(8.dp))
             Text("Configure Questions")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Test button - triggers alarm immediately
+        Button(
+            onClick = { viewModel.triggerTestAlarm() },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondary
+            )
+        ) {
+            Icon(Icons.Default.PlayArrow, contentDescription = null)
+            Spacer(modifier = Modifier.size(8.dp))
+            Text("Test Alarm Now")
         }
 
         Spacer(modifier = Modifier.height(16.dp))

@@ -1,7 +1,10 @@
 package com.example.aialarmclock.ui.viewmodels
 
 import android.app.Application
+import android.content.Intent
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
+import com.example.aialarmclock.service.AlarmForegroundService
 import androidx.lifecycle.viewModelScope
 import com.example.aialarmclock.alarm.AlarmScheduler
 import com.example.aialarmclock.data.local.AlarmDatabase
@@ -107,5 +110,20 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshPermissionStatus() {
         checkAlarmPermission()
+    }
+
+    /**
+     * Triggers the alarm immediately for testing purposes.
+     * This bypasses the scheduler and directly starts the alarm service.
+     */
+    fun triggerTestAlarm() {
+        val context = getApplication<Application>()
+        val intent = Intent(context, AlarmForegroundService::class.java)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
     }
 }
