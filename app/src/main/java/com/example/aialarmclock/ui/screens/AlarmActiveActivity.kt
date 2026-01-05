@@ -45,14 +45,13 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.aialarmclock.service.AlarmForegroundService
-import com.example.aialarmclock.speech.SpeechRecognitionManager
 import com.example.aialarmclock.speech.TextToSpeechManager
 import com.example.aialarmclock.ui.theme.AIAlarmClockTheme
 import com.example.aialarmclock.ui.viewmodels.AlarmActiveViewModel
 import com.example.aialarmclock.ui.viewmodels.AlarmState
+import kotlinx.coroutines.delay
 
 class AlarmActiveActivity : ComponentActivity() {
 
@@ -141,15 +140,13 @@ fun AlarmActiveScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
-    // Initialize TTS and STT managers
+    // Initialize TTS manager
     val ttsManager = remember { TextToSpeechManager(context) }
-    val sttManager = remember { SpeechRecognitionManager(context) }
 
     // Cleanup on dispose
     DisposableEffect(Unit) {
         onDispose {
             ttsManager.shutdown()
-            sttManager.destroy()
         }
     }
 
@@ -165,31 +162,15 @@ fun AlarmActiveScreen(
         }
     }
 
-    // Handle STT - continuously listen and accumulate responses
-    // Restarts listening after each segment (triggered by segmentCount change)
-    LaunchedEffect(uiState.state, uiState.segmentCount) {
-        if (uiState.state == AlarmState.LISTENING) {
-            sttManager.startListening(
-                listener = object : SpeechRecognitionManager.SpeechListener {
-                    override fun onReadyForSpeech() {}
-                    override fun onBeginningOfSpeech() {}
-                    override fun onEndOfSpeech() {}
-
-                    override fun onResult(transcription: String) {
-                        // Accumulate this segment and keep listening
-                        viewModel.onSpeechSegmentComplete(transcription)
-                    }
-
-                    override fun onError(errorCode: Int, errorMessage: String) {
-                        viewModel.onSpeechError(errorCode, errorMessage)
-                    }
-
-                    override fun onPartialResult(partialText: String) {
-                        viewModel.onPartialResult(partialText)
-                    }
-                },
-                longListen = true
-            )
+    // Update recording duration timer
+    LaunchedEffect(uiState.state) {
+        if (uiState.state == AlarmState.RECORDING) {
+            var seconds = 0L
+            while (true) {
+                delay(1000)
+                seconds++
+                viewModel.updateRecordingDuration(seconds)
+            }
         }
     }
 
@@ -223,18 +204,15 @@ fun AlarmActiveScreen(
                 )
                 AlarmState.LOADING -> LoadingState()
                 AlarmState.SPEAKING -> SpeakingState(question = uiState.question)
-                AlarmState.LISTENING -> ListeningState(
+                AlarmState.RECORDING -> RecordingState(
                     question = uiState.question,
-                    accumulatedResponse = uiState.transcribedResponse,
-                    partialResponse = uiState.partialResponse,
-                    onDone = { viewModel.finishListening() }
+                    durationSeconds = uiState.recordingDuration,
+                    onDone = { viewModel.finishRecording() }
                 )
-                AlarmState.PROCESSING -> ProcessingState(
-                    response = uiState.transcribedResponse
-                )
+                AlarmState.TRANSCRIBING -> TranscribingState()
                 AlarmState.ERROR -> ErrorState(
                     errorMessage = uiState.errorMessage ?: "Something went wrong",
-                    onRetry = { viewModel.retryListening() },
+                    onRetry = { viewModel.retryRecording() },
                     onSkip = { viewModel.skipQuestion() }
                 )
                 AlarmState.COMPLETED -> {
@@ -362,10 +340,9 @@ private fun SpeakingState(question: String) {
 }
 
 @Composable
-private fun ListeningState(
+private fun RecordingState(
     question: String,
-    accumulatedResponse: String,
-    partialResponse: String,
+    durationSeconds: Long,
     onDone: () -> Unit
 ) {
     val pulseScale by animateFloatAsState(
@@ -374,13 +351,10 @@ private fun ListeningState(
         label = "pulse"
     )
 
-    // Combine accumulated + current partial for display
-    val displayText = when {
-        accumulatedResponse.isNotEmpty() && partialResponse.isNotEmpty() ->
-            "$accumulatedResponse $partialResponse"
-        accumulatedResponse.isNotEmpty() -> accumulatedResponse
-        else -> partialResponse
-    }
+    // Format duration as MM:SS
+    val minutes = durationSeconds / 60
+    val seconds = durationSeconds % 60
+    val durationText = String.format("%02d:%02d", minutes, seconds)
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -395,28 +369,43 @@ private fun ListeningState(
             modifier = Modifier.padding(horizontal = 16.dp)
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.weight(1f))
 
-        // Mic icon
+        // Recording indicator
         Icon(
             imageVector = Icons.Default.Mic,
-            contentDescription = "Listening",
+            contentDescription = "Recording",
             modifier = Modifier
-                .size(64.dp)
+                .size(100.dp)
                 .scale(pulseScale),
-            tint = MaterialTheme.colorScheme.primary
+            tint = MaterialTheme.colorScheme.error
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Encouraging prompt
+        // Recording duration
         Text(
-            text = if (accumulatedResponse.isEmpty())
-                "Share your thoughts... take your time"
-            else
-                "Keep going... I'm listening",
+            text = durationText,
+            style = MaterialTheme.typography.displaySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Recording...",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.error
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Encouraging text
+        Text(
+            text = "Share your thoughts... take your time",
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.primary,
+            textAlign = TextAlign.Center
         )
 
         Text(
@@ -425,47 +414,14 @@ private fun ListeningState(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Transcription display area
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                    shape = MaterialTheme.shapes.medium
-                )
-                .padding(16.dp)
-        ) {
-            if (displayText.isNotEmpty()) {
-                Text(
-                    text = displayText,
-                    style = MaterialTheme.typography.bodyLarge,
-                    textAlign = TextAlign.Start,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                Text(
-                    text = "Your response will appear here...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.weight(1f))
 
         // Done button
         Button(
             onClick = onDone,
             modifier = Modifier
                 .fillMaxWidth(0.7f)
-                .height(56.dp),
-            enabled = displayText.isNotEmpty()
+                .height(56.dp)
         ) {
             Text(
                 text = "Done",
@@ -478,28 +434,28 @@ private fun ListeningState(
 }
 
 @Composable
-private fun ProcessingState(response: String) {
+private fun TranscribingState() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         CircularProgressIndicator(
-            modifier = Modifier.size(48.dp)
+            modifier = Modifier.size(64.dp),
+            strokeWidth = 4.dp
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(32.dp))
 
         Text(
-            text = "Saving your response...",
-            style = MaterialTheme.typography.bodyLarge
+            text = "Transcribing your reflection...",
+            style = MaterialTheme.typography.titleMedium
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "\"$response\"",
+            text = "This may take a moment",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

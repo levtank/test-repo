@@ -7,18 +7,21 @@ import com.example.aialarmclock.ai.QuestionGenerator
 import com.example.aialarmclock.data.local.AlarmDatabase
 import com.example.aialarmclock.data.preferences.UserPreferences
 import com.example.aialarmclock.data.repository.ResponseRepository
+import com.example.aialarmclock.speech.AudioRecorder
+import com.example.aialarmclock.speech.WhisperApiClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.io.File
 
 enum class AlarmState {
-    RINGING,           // Alarm is ringing, waiting for user to say anything to stop
-    LOADING,           // Generating question (after user stopped ringing)
+    RINGING,           // Alarm is ringing, waiting for user to tap button
+    LOADING,           // Generating question
     SPEAKING,          // TTS is speaking the question
-    LISTENING,         // STT is listening for response (up to 1 minute)
-    PROCESSING,        // Processing/saving response
+    RECORDING,         // Recording user's voice response
+    TRANSCRIBING,      // Sending audio to Whisper API
     COMPLETED,         // All done, dismiss alarm
     ERROR              // Something went wrong
 }
@@ -26,12 +29,10 @@ enum class AlarmState {
 data class AlarmActiveUiState(
     val state: AlarmState = AlarmState.RINGING,
     val question: String = "",
-    val transcribedResponse: String = "",  // Full accumulated response
-    val partialResponse: String = "",       // Current partial transcription
-    val currentSegment: String = "",        // Latest completed segment before accumulation
+    val transcribedResponse: String = "",
+    val recordingDuration: Long = 0L,  // Recording time in seconds
     val errorMessage: String? = null,
-    val wakePhrase: String = "",
-    val segmentCount: Int = 0               // How many speech segments captured
+    val wakePhrase: String = ""
 )
 
 class AlarmActiveViewModel(application: Application) : AndroidViewModel(application) {
@@ -39,29 +40,20 @@ class AlarmActiveViewModel(application: Application) : AndroidViewModel(applicat
     private val database = AlarmDatabase.getDatabase(application)
     private val responseRepository = ResponseRepository(database.responseDao())
     private val userPreferences = UserPreferences(application)
+    private val audioRecorder = AudioRecorder(application)
 
     private val _uiState = MutableStateFlow(AlarmActiveUiState())
     val uiState: StateFlow<AlarmActiveUiState> = _uiState.asStateFlow()
 
     private var currentQuestion: String = ""
+    private var recordedAudioFile: File? = null
 
     /**
-     * Called when user says something to stop the ringing (e.g., "good morning")
+     * Called when user taps button to stop the ringing
      */
     fun onWakePhrase(phrase: String) {
-        _uiState.value = _uiState.value.copy(
-            wakePhrase = phrase
-        )
-        // Now load the question and stop the alarm sound
+        _uiState.value = _uiState.value.copy(wakePhrase = phrase)
         loadQuestion()
-    }
-
-    /**
-     * Called if speech recognition fails during ringing phase - restart listening
-     */
-    fun onRingingListenError() {
-        // Just restart listening for wake phrase, don't show error
-        _uiState.value = _uiState.value.copy(state = AlarmState.RINGING)
     }
 
     fun loadQuestion() {
@@ -96,104 +88,122 @@ class AlarmActiveViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun onSpeakingComplete() {
-        _uiState.value = _uiState.value.copy(state = AlarmState.LISTENING)
+        startRecording()
     }
 
     fun onSpeakingError() {
-        // Still proceed to listening even if TTS fails
-        _uiState.value = _uiState.value.copy(state = AlarmState.LISTENING)
+        // Still proceed to recording even if TTS fails
+        startRecording()
     }
 
-    fun onPartialResult(text: String) {
-        _uiState.value = _uiState.value.copy(partialResponse = text)
-    }
-
-    /**
-     * Called when a speech segment completes (silence detected).
-     * Accumulates the transcription and signals to continue listening.
-     */
-    fun onSpeechSegmentComplete(transcription: String) {
-        if (transcription.isBlank()) return
-
-        val currentResponse = _uiState.value.transcribedResponse
-        val newResponse = if (currentResponse.isEmpty()) {
-            transcription
-        } else {
-            "$currentResponse $transcription"
-        }
-
-        _uiState.value = _uiState.value.copy(
-            transcribedResponse = newResponse,
-            currentSegment = transcription,
-            partialResponse = "",
-            segmentCount = _uiState.value.segmentCount + 1
-        )
-        // Stay in LISTENING state - the UI will restart the recognizer
-    }
-
-    /**
-     * Called when user taps "Done" to finish their response.
-     * Saves the accumulated transcription.
-     */
-    fun finishListening() {
-        val finalResponse = _uiState.value.transcribedResponse.ifBlank {
-            _uiState.value.partialResponse
-        }
-
-        viewModelScope.launch {
+    private fun startRecording() {
+        try {
+            recordedAudioFile = audioRecorder.startRecording()
             _uiState.value = _uiState.value.copy(
-                state = AlarmState.PROCESSING,
-                transcribedResponse = finalResponse
+                state = AlarmState.RECORDING,
+                recordingDuration = 0L
             )
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(
+                state = AlarmState.ERROR,
+                errorMessage = "Failed to start recording: ${e.message}"
+            )
+        }
+    }
 
-            // Save the response
+    /**
+     * Update the recording duration display
+     */
+    fun updateRecordingDuration(seconds: Long) {
+        if (_uiState.value.state == AlarmState.RECORDING) {
+            _uiState.value = _uiState.value.copy(recordingDuration = seconds)
+        }
+    }
+
+    /**
+     * Called when user taps "Done" to finish recording
+     */
+    fun finishRecording() {
+        viewModelScope.launch {
+            val audioFile = audioRecorder.stopRecording()
+
+            if (audioFile == null || !audioFile.exists()) {
+                _uiState.value = _uiState.value.copy(
+                    state = AlarmState.ERROR,
+                    errorMessage = "Recording failed - no audio file"
+                )
+                return@launch
+            }
+
+            _uiState.value = _uiState.value.copy(state = AlarmState.TRANSCRIBING)
+
             try {
+                val openAiKey = userPreferences.openAiApiKey.first()
+
+                if (openAiKey.isNullOrBlank()) {
+                    _uiState.value = _uiState.value.copy(
+                        state = AlarmState.ERROR,
+                        errorMessage = "OpenAI API key not configured. Please add it in Settings."
+                    )
+                    return@launch
+                }
+
+                val whisperClient = WhisperApiClient(openAiKey)
+                val transcription = whisperClient.transcribe(audioFile)
+
+                _uiState.value = _uiState.value.copy(transcribedResponse = transcription)
+
+                // Save the response
                 responseRepository.saveResponse(
                     question = currentQuestion,
-                    response = finalResponse.ifBlank { "(No response)" }
+                    response = transcription.ifBlank { "(No speech detected)" }
                 )
+
+                // Clean up audio file
+                audioFile.delete()
+
                 _uiState.value = _uiState.value.copy(state = AlarmState.COMPLETED)
+
             } catch (e: Exception) {
-                // Still complete even if save fails
-                _uiState.value = _uiState.value.copy(state = AlarmState.COMPLETED)
+                _uiState.value = _uiState.value.copy(
+                    state = AlarmState.ERROR,
+                    errorMessage = "Transcription failed: ${e.message}"
+                )
             }
         }
     }
 
-    fun onSpeechError(errorCode: Int, errorMessage: String) {
-        // If we already have some transcription, just continue listening
-        if (_uiState.value.transcribedResponse.isNotEmpty()) {
-            // Stay in listening state, UI will restart recognizer
-            return
-        }
+    fun retryRecording() {
+        // Clean up any existing recording
+        audioRecorder.cancelRecording()
+        recordedAudioFile?.delete()
 
-        // Only show error if we have no transcription at all
-        _uiState.value = _uiState.value.copy(
-            state = AlarmState.ERROR,
-            errorMessage = errorMessage
-        )
-    }
-
-    fun retryListening() {
-        _uiState.value = _uiState.value.copy(
-            state = AlarmState.LISTENING,
-            errorMessage = null,
-            partialResponse = ""
-        )
+        // Start fresh
+        startRecording()
     }
 
     fun skipQuestion() {
         viewModelScope.launch {
+            // Stop any ongoing recording
+            audioRecorder.cancelRecording()
+            recordedAudioFile?.delete()
+
             // Save with empty response
             try {
                 responseRepository.saveResponse(
                     question = currentQuestion,
-                    response = "(No response)"
+                    response = "(Skipped)"
                 )
             } catch (e: Exception) {
                 // Ignore save errors
             }
             _uiState.value = _uiState.value.copy(state = AlarmState.COMPLETED)
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        audioRecorder.release()
+        audioRecorder.cleanupOldRecordings()
     }
 }

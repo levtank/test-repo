@@ -13,11 +13,18 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 class UserPreferences(private val context: Context) {
 
-    private val apiKeyKey = stringPreferencesKey("claude_api_key")
+    private val claudeApiKeyKey = stringPreferencesKey("claude_api_key")
+    private val openAiApiKeyKey = stringPreferencesKey("openai_api_key")
     private val defaultThemeKey = stringPreferencesKey("default_theme")
 
+    // Claude API key (for question generation)
     val apiKey: Flow<String?> = context.dataStore.data.map { preferences ->
-        preferences[apiKeyKey]
+        preferences[claudeApiKeyKey]
+    }
+
+    // OpenAI API key (for Whisper transcription)
+    val openAiApiKey: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[openAiApiKeyKey]
     }
 
     val defaultTheme: Flow<String> = context.dataStore.data.map { preferences ->
@@ -26,7 +33,13 @@ class UserPreferences(private val context: Context) {
 
     suspend fun saveApiKey(apiKey: String) {
         context.dataStore.edit { preferences ->
-            preferences[apiKeyKey] = apiKey
+            preferences[claudeApiKeyKey] = apiKey
+        }
+    }
+
+    suspend fun saveOpenAiApiKey(apiKey: String) {
+        context.dataStore.edit { preferences ->
+            preferences[openAiApiKeyKey] = apiKey
         }
     }
 
@@ -38,7 +51,13 @@ class UserPreferences(private val context: Context) {
 
     suspend fun clearApiKey() {
         context.dataStore.edit { preferences ->
-            preferences.remove(apiKeyKey)
+            preferences.remove(claudeApiKeyKey)
+        }
+    }
+
+    suspend fun clearOpenAiApiKey() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(openAiApiKeyKey)
         }
     }
 

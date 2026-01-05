@@ -39,12 +39,17 @@ import com.example.aialarmclock.ui.viewmodels.AlarmViewModel
 @Composable
 fun SettingsScreen(viewModel: AlarmViewModel) {
     val currentApiKey by viewModel.apiKey.collectAsState()
+    val currentOpenAiApiKey by viewModel.openAiApiKey.collectAsState()
     val permissionNeeded by viewModel.permissionNeeded.collectAsState()
 
     var apiKeyInput by remember(currentApiKey) {
         mutableStateOf(currentApiKey ?: "")
     }
+    var openAiKeyInput by remember(currentOpenAiApiKey) {
+        mutableStateOf(currentOpenAiApiKey ?: "")
+    }
     var showApiKey by remember { mutableStateOf(false) }
+    var showOpenAiKey by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -163,14 +168,84 @@ fun SettingsScreen(viewModel: AlarmViewModel) {
 
             Spacer(modifier = Modifier.height(32.dp))
 
+            // OpenAI API Key section (for Whisper transcription)
+            Text(
+                text = "OpenAI API Key",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Required for voice transcription (Whisper). Get your API key from platform.openai.com",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = openAiKeyInput,
+                onValueChange = { openAiKeyInput = it },
+                label = { Text("OpenAI API Key") },
+                placeholder = { Text("sk-...") },
+                modifier = Modifier.fillMaxWidth(),
+                visualTransformation = if (showOpenAiKey) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { showOpenAiKey = !showOpenAiKey }) {
+                        Icon(
+                            imageVector = if (showOpenAiKey) {
+                                Icons.Default.VisibilityOff
+                            } else {
+                                Icons.Default.Visibility
+                            },
+                            contentDescription = if (showOpenAiKey) "Hide" else "Show"
+                        )
+                    }
+                },
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = {
+                    if (openAiKeyInput.isNotBlank()) {
+                        viewModel.saveOpenAiApiKey(openAiKeyInput)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = openAiKeyInput.isNotBlank() && openAiKeyInput != currentOpenAiApiKey
+            ) {
+                Text("Save OpenAI Key")
+            }
+
+            if (!currentOpenAiApiKey.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.clearOpenAiApiKey()
+                        openAiKeyInput = ""
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Clear OpenAI Key")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
+
             // Status
+            val allKeysConfigured = !currentApiKey.isNullOrBlank() && !currentOpenAiApiKey.isNullOrBlank()
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (currentApiKey.isNullOrBlank()) {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    } else {
+                    containerColor = if (allKeysConfigured) {
                         MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
                     }
                 )
             ) {
@@ -180,11 +255,25 @@ fun SettingsScreen(viewModel: AlarmViewModel) {
                         style = MaterialTheme.typography.titleSmall
                     )
                     Spacer(modifier = Modifier.height(4.dp))
+
+                    // Claude API status
                     Text(
                         text = if (currentApiKey.isNullOrBlank()) {
-                            "No API key configured. AI-generated questions will fall back to default."
+                            "Claude: Not configured (will use default questions)"
                         } else {
-                            "API key configured. AI-generated questions are enabled."
+                            "Claude: Configured (AI questions enabled)"
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // OpenAI API status
+                    Text(
+                        text = if (currentOpenAiApiKey.isNullOrBlank()) {
+                            "OpenAI: Not configured (transcription unavailable)"
+                        } else {
+                            "OpenAI: Configured (Whisper transcription enabled)"
                         },
                         style = MaterialTheme.typography.bodyMedium
                     )

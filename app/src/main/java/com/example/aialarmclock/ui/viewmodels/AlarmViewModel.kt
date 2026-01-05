@@ -35,6 +35,9 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     val apiKey: StateFlow<String?> = userPreferences.apiKey
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val openAiApiKey: StateFlow<String?> = userPreferences.openAiApiKey
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     val responses = responseRepository.allResponses
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -97,6 +100,18 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     fun clearApiKey() {
         viewModelScope.launch {
             userPreferences.clearApiKey()
+        }
+    }
+
+    fun saveOpenAiApiKey(key: String) {
+        viewModelScope.launch {
+            userPreferences.saveOpenAiApiKey(key)
+        }
+    }
+
+    fun clearOpenAiApiKey() {
+        viewModelScope.launch {
+            userPreferences.clearOpenAiApiKey()
         }
     }
 
