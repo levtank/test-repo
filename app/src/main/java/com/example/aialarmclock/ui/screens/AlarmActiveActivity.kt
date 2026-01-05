@@ -153,35 +153,6 @@ fun AlarmActiveScreen(
         }
     }
 
-    // Handle RINGING state - listen for wake phrase to stop alarm
-    LaunchedEffect(uiState.state) {
-        if (uiState.state == AlarmState.RINGING) {
-            sttManager.startListening(
-                listener = object : SpeechRecognitionManager.SpeechListener {
-                    override fun onReadyForSpeech() {}
-                    override fun onBeginningOfSpeech() {}
-                    override fun onEndOfSpeech() {}
-
-                    override fun onResult(transcription: String) {
-                        // User said something - stop the alarm sound and proceed
-                        onStopAlarmSound()
-                        viewModel.onWakePhrase(transcription)
-                    }
-
-                    override fun onError(errorCode: Int, errorMessage: String) {
-                        // Restart listening - keep waiting for wake phrase
-                        viewModel.onRingingListenError()
-                    }
-
-                    override fun onPartialResult(partialText: String) {
-                        // Could show what user is saying, but for wake phrase we just wait for result
-                    }
-                },
-                longListen = false // Quick detection for wake phrase
-            )
-        }
-    }
-
     // Handle TTS when question is ready
     LaunchedEffect(uiState.state, uiState.question) {
         if (uiState.state == AlarmState.SPEAKING && uiState.question.isNotEmpty()) {
@@ -242,7 +213,12 @@ fun AlarmActiveScreen(
             verticalArrangement = Arrangement.Center
         ) {
             when (uiState.state) {
-                AlarmState.RINGING -> RingingState()
+                AlarmState.RINGING -> RingingState(
+                    onStopAlarm = {
+                        onStopAlarmSound()
+                        viewModel.onWakePhrase("Button pressed")
+                    }
+                )
                 AlarmState.LOADING -> LoadingState()
                 AlarmState.SPEAKING -> SpeakingState(question = uiState.question)
                 AlarmState.LISTENING -> ListeningState(
@@ -267,7 +243,7 @@ fun AlarmActiveScreen(
 }
 
 @Composable
-private fun RingingState() {
+private fun RingingState(onStopAlarm: () -> Unit) {
     val pulseScale by animateFloatAsState(
         targetValue = 1.3f,
         animationSpec = tween(800),
@@ -300,36 +276,27 @@ private fun RingingState() {
             color = alarmColor
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(48.dp))
+
+        Button(
+            onClick = onStopAlarm,
+            modifier = Modifier
+                .fillMaxWidth(0.7f)
+                .height(56.dp)
+        ) {
+            Text(
+                text = "I'm Awake!",
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Say anything to stop",
-            style = MaterialTheme.typography.titleLarge,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "(e.g., \"Good morning\")",
+            text = "Tap to stop alarm and answer a question",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Icon(
-            imageVector = Icons.Default.Mic,
-            contentDescription = "Listening",
-            modifier = Modifier.size(40.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
-
-        Text(
-            text = "Listening...",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary
         )
     }
 }
