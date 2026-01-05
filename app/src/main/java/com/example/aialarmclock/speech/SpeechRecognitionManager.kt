@@ -95,10 +95,15 @@ class SpeechRecognitionManager(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
 
             if (longListen) {
-                // For question responses - wait up to 1 minute with longer silence tolerance
+                // For question responses - wait for 10 seconds of silence before stopping
+                // This allows for long, thoughtful responses with natural pauses
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 8000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1000L)
+
+                // Disable formatting to get more verbatim transcription (including disfluencies)
+                putExtra("android.speech.extra.ENABLE_FORMATTING", false)
+                putExtra("android.speech.extra.DICTATION_MODE", true)
             } else {
                 // For wake phrase - quick detection
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
