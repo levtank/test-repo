@@ -26,10 +26,12 @@ enum class AlarmState {
 data class AlarmActiveUiState(
     val state: AlarmState = AlarmState.RINGING,
     val question: String = "",
-    val transcribedResponse: String = "",
-    val partialResponse: String = "",
+    val transcribedResponse: String = "",  // Full accumulated response
+    val partialResponse: String = "",       // Current partial transcription
+    val currentSegment: String = "",        // Latest completed segment before accumulation
     val errorMessage: String? = null,
-    val wakePhrase: String = "" // What user said to stop the ringing
+    val wakePhrase: String = "",
+    val segmentCount: Int = 0               // How many speech segments captured
 )
 
 class AlarmActiveViewModel(application: Application) : AndroidViewModel(application) {
@@ -106,18 +108,49 @@ class AlarmActiveViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.value = _uiState.value.copy(partialResponse = text)
     }
 
-    fun onSpeechResult(transcription: String) {
+    /**
+     * Called when a speech segment completes (silence detected).
+     * Accumulates the transcription and signals to continue listening.
+     */
+    fun onSpeechSegmentComplete(transcription: String) {
+        if (transcription.isBlank()) return
+
+        val currentResponse = _uiState.value.transcribedResponse
+        val newResponse = if (currentResponse.isEmpty()) {
+            transcription
+        } else {
+            "$currentResponse $transcription"
+        }
+
+        _uiState.value = _uiState.value.copy(
+            transcribedResponse = newResponse,
+            currentSegment = transcription,
+            partialResponse = "",
+            segmentCount = _uiState.value.segmentCount + 1
+        )
+        // Stay in LISTENING state - the UI will restart the recognizer
+    }
+
+    /**
+     * Called when user taps "Done" to finish their response.
+     * Saves the accumulated transcription.
+     */
+    fun finishListening() {
+        val finalResponse = _uiState.value.transcribedResponse.ifBlank {
+            _uiState.value.partialResponse
+        }
+
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 state = AlarmState.PROCESSING,
-                transcribedResponse = transcription
+                transcribedResponse = finalResponse
             )
 
             // Save the response
             try {
                 responseRepository.saveResponse(
                     question = currentQuestion,
-                    response = transcription
+                    response = finalResponse.ifBlank { "(No response)" }
                 )
                 _uiState.value = _uiState.value.copy(state = AlarmState.COMPLETED)
             } catch (e: Exception) {
@@ -128,7 +161,13 @@ class AlarmActiveViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun onSpeechError(errorCode: Int, errorMessage: String) {
-        // If no speech detected, allow retry or skip
+        // If we already have some transcription, just continue listening
+        if (_uiState.value.transcribedResponse.isNotEmpty()) {
+            // Stay in listening state, UI will restart recognizer
+            return
+        }
+
+        // Only show error if we have no transcription at all
         _uiState.value = _uiState.value.copy(
             state = AlarmState.ERROR,
             errorMessage = errorMessage

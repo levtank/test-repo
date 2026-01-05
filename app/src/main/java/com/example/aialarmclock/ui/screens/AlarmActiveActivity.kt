@@ -165,8 +165,9 @@ fun AlarmActiveScreen(
         }
     }
 
-    // Handle STT when ready to listen for question response (up to 1 minute)
-    LaunchedEffect(uiState.state) {
+    // Handle STT - continuously listen and accumulate responses
+    // Restarts listening after each segment (triggered by segmentCount change)
+    LaunchedEffect(uiState.state, uiState.segmentCount) {
         if (uiState.state == AlarmState.LISTENING) {
             sttManager.startListening(
                 listener = object : SpeechRecognitionManager.SpeechListener {
@@ -175,7 +176,8 @@ fun AlarmActiveScreen(
                     override fun onEndOfSpeech() {}
 
                     override fun onResult(transcription: String) {
-                        viewModel.onSpeechResult(transcription)
+                        // Accumulate this segment and keep listening
+                        viewModel.onSpeechSegmentComplete(transcription)
                     }
 
                     override fun onError(errorCode: Int, errorMessage: String) {
@@ -186,7 +188,7 @@ fun AlarmActiveScreen(
                         viewModel.onPartialResult(partialText)
                     }
                 },
-                longListen = true // Wait up to 1 minute for response
+                longListen = true
             )
         }
     }
@@ -223,7 +225,9 @@ fun AlarmActiveScreen(
                 AlarmState.SPEAKING -> SpeakingState(question = uiState.question)
                 AlarmState.LISTENING -> ListeningState(
                     question = uiState.question,
-                    partialResponse = uiState.partialResponse
+                    accumulatedResponse = uiState.transcribedResponse,
+                    partialResponse = uiState.partialResponse,
+                    onDone = { viewModel.finishListening() }
                 )
                 AlarmState.PROCESSING -> ProcessingState(
                     response = uiState.transcribedResponse
@@ -360,7 +364,9 @@ private fun SpeakingState(question: String) {
 @Composable
 private fun ListeningState(
     question: String,
-    partialResponse: String
+    accumulatedResponse: String,
+    partialResponse: String,
+    onDone: () -> Unit
 ) {
     val pulseScale by animateFloatAsState(
         targetValue = 1.2f,
@@ -368,45 +374,106 @@ private fun ListeningState(
         label = "pulse"
     )
 
+    // Combine accumulated + current partial for display
+    val displayText = when {
+        accumulatedResponse.isNotEmpty() && partialResponse.isNotEmpty() ->
+            "$accumulatedResponse $partialResponse"
+        accumulatedResponse.isNotEmpty() -> accumulatedResponse
+        else -> partialResponse
+    }
+
     Column(
+        modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Question at the top
         Text(
             text = question,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium,
             textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp)
-        )
-
-        Spacer(modifier = Modifier.height(48.dp))
-
-        Icon(
-            imageVector = Icons.Default.Mic,
-            contentDescription = "Listening",
-            modifier = Modifier
-                .size(100.dp)
-                .scale(pulseScale),
-            tint = MaterialTheme.colorScheme.primary
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // Mic icon
+        Icon(
+            imageVector = Icons.Default.Mic,
+            contentDescription = "Listening",
+            modifier = Modifier
+                .size(64.dp)
+                .scale(pulseScale),
+            tint = MaterialTheme.colorScheme.primary
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Encouraging prompt
         Text(
-            text = "Speak your answer...",
+            text = if (accumulatedResponse.isEmpty())
+                "Share your thoughts... take your time"
+            else
+                "Keep going... I'm listening",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.primary
         )
 
-        if (partialResponse.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Tap 'Done' when you're finished",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Transcription display area
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                    shape = MaterialTheme.shapes.medium
+                )
+                .padding(16.dp)
+        ) {
+            if (displayText.isNotEmpty()) {
+                Text(
+                    text = displayText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Start,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                Text(
+                    text = "Your response will appear here...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Done button
+        Button(
+            onClick = onDone,
+            modifier = Modifier
+                .fillMaxWidth(0.7f)
+                .height(56.dp),
+            enabled = displayText.isNotEmpty()
+        ) {
             Text(
-                text = partialResponse,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                text = "Done",
+                style = MaterialTheme.typography.titleMedium
             )
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
