@@ -143,7 +143,7 @@ Start by greeting them and asking how they slept."""
             append(""""input_audio_format":"pcm16",""")
             append(""""output_audio_format":"pcm16",""")
             append(""""input_audio_transcription":{"model":"whisper-1"},""")
-            append(""""turn_detection":{"type":"server_vad","threshold":0.5,"prefix_padding_ms":300,"silence_duration_ms":500}""")
+            append(""""turn_detection":{"type":"server_vad","threshold":0.6,"prefix_padding_ms":400,"silence_duration_ms":800}""")
             append("""}}""")
         }
         webSocket?.send(sessionConfig)
@@ -206,7 +206,7 @@ Start by greeting them and asking how they slept."""
      * Interrupt the AI's current response.
      */
     fun interruptAi() {
-        audioPlayer.clearQueue()
+        audioPlayer.stop()  // Stop playback completely, not just clear queue
         val cancelMessage = """{"type":"response.cancel"}"""
         webSocket?.send(cancelMessage)
         _isAiSpeaking.value = false
@@ -236,8 +236,12 @@ Start by greeting them and asking how they slept."""
 
                 "response.audio.done" -> {
                     _isAiSpeaking.value = false
-                    // Start listening for user response
-                    startListening()
+                    // Add delay to let speaker buffer drain before starting mic
+                    // This prevents the mic from picking up AI audio playback
+                    scope.launch {
+                        kotlinx.coroutines.delay(300)
+                        startListening()
+                    }
                 }
 
                 "response.audio_transcript.delta" -> {

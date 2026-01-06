@@ -26,6 +26,7 @@ class AlarmForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var vibrator: Vibrator? = null
     private val binder = LocalBinder()
+    private var alarmSoundStopped = false  // Track if sound was intentionally stopped
 
     inner class LocalBinder : Binder() {
         fun getService(): AlarmForegroundService = this@AlarmForegroundService
@@ -43,9 +44,12 @@ class AlarmForegroundService : Service() {
         val notification = buildNotification()
         startForeground(NOTIFICATION_ID, notification)
 
-        // Start alarm sound and vibration
-        startAlarmSound()
-        startVibration()
+        // Only start alarm sound if it hasn't been intentionally stopped
+        // This prevents the alarm from restarting during conversation
+        if (!alarmSoundStopped) {
+            startAlarmSound()
+            startVibration()
+        }
 
         // Launch the fullscreen alarm activity
         launchAlarmActivity()
@@ -142,9 +146,11 @@ class AlarmForegroundService : Service() {
 
     /**
      * Stop just the alarm sound and vibration, but keep service running.
-     * Used when user says something to stop the ringing before question is asked.
+     * Used when user taps "I'm Awake!" to stop the ringing before conversation starts.
      */
     fun stopSound() {
+        alarmSoundStopped = true  // Prevent restart if service is recreated
+
         // Stop sound
         mediaPlayer?.apply {
             if (isPlaying) {
