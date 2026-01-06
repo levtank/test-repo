@@ -175,8 +175,15 @@ Start by greeting them and asking how they slept."""
         }
 
         audioStreamJob = scope.launch {
-            audioStreamer.startStreaming().collect { base64Audio ->
-                sendAudioChunk(base64Audio)
+            try {
+                audioStreamer.startStreaming().collect { base64Audio ->
+                    sendAudioChunk(base64Audio)
+                }
+            } catch (e: SecurityException) {
+                // Microphone permission not granted
+                _events.emit(ConversationEvent.Error("Microphone permission required"))
+            } catch (e: Exception) {
+                _events.emit(ConversationEvent.Error("Audio error: ${e.message}"))
             }
         }
     }
