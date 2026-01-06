@@ -175,12 +175,6 @@ Start by greeting them and asking how they slept."""
             return
         }
 
-        // If AI is speaking, interrupt it
-        if (_isAiSpeaking.value) {
-            Log.d(TAG, "AI is speaking, interrupting")
-            interruptAi()
-        }
-
         Log.d(TAG, "Starting audio stream job")
         audioStreamJob = scope.launch {
             try {
@@ -193,6 +187,9 @@ Start by greeting them and asking how they slept."""
                     sendAudioChunk(base64Audio)
                 }
                 Log.d(TAG, "Audio streaming completed normally, sent $chunkCount chunks")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Job was cancelled - this is expected when conversation ends or user speaks
+                Log.d(TAG, "Audio streaming job cancelled (expected)")
             } catch (e: SecurityException) {
                 Log.e(TAG, "Microphone permission not granted", e)
                 _events.emit(ConversationEvent.Error("Microphone permission required"))
@@ -253,21 +250,28 @@ Start by greeting them and asking how they slept."""
                 }
 
                 "response.audio.delta" -> {
-                    // Received audio chunk from AI
+                    // Received audio chunk from AI - stop mic to prevent feedback
+                    if (!_isAiSpeaking.value) {
+                        Log.d(TAG, "AI started speaking, stopping mic to prevent feedback")
+                        stopListening()
+                        _isAiSpeaking.value = true
+                    }
                     val delta = event["delta"]?.jsonPrimitive?.content
                     if (delta != null) {
-                        _isAiSpeaking.value = true
                         audioPlayer.queueAudio(delta)
                     }
                 }
 
                 "response.audio.done" -> {
                     _isAiSpeaking.value = false
+                    Log.d(TAG, "AI finished speaking, will start listening after delay")
                     // Add delay to let speaker buffer drain before starting mic
                     // This prevents the mic from picking up AI audio playback
                     scope.launch {
-                        kotlinx.coroutines.delay(300)
-                        startListening()
+                        kotlinx.coroutines.delay(500)  // Increased delay for speaker to finish
+                        if (!_isAiSpeaking.value) {  // Only start if AI hasn't started speaking again
+                            startListening()
+                        }
                     }
                 }
 
@@ -320,7 +324,12 @@ Start by greeting them and asking how they slept."""
                 "error" -> {
                     val error = event["error"]?.jsonObject
                     val message = error?.get("message")?.jsonPrimitive?.content ?: "Unknown error"
-                    _events.emit(ConversationEvent.Error(message))
+                    val code = error?.get("code")?.jsonPrimitive?.content
+                    Log.e(TAG, "Server error: code=$code, message=$message")
+                    // Don't show cancellation errors to user, they're expected when interrupting
+                    if (code != "response_already_in_progress" && code != "response_cancelled") {
+                        _events.emit(ConversationEvent.Error(message))
+                    }
                 }
             }
         } catch (e: Exception) {
