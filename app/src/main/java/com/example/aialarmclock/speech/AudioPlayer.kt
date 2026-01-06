@@ -4,7 +4,10 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Base64
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,8 +23,10 @@ class AudioPlayer {
     private var audioTrack: AudioTrack? = null
     private val isPlaying = AtomicBoolean(false)
     private val audioQueue = ConcurrentLinkedQueue<ByteArray>()
+    private val mutex = Mutex()  // Protect AudioTrack operations
 
     companion object {
+        private const val TAG = "AudioPlayer"
         const val SAMPLE_RATE = 24000  // 24kHz from OpenAI Realtime API
         const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
         const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
@@ -35,38 +40,62 @@ class AudioPlayer {
 
     /**
      * Initialize the audio player.
+     * Must be called before queueing audio.
      */
-    fun initialize() {
-        if (audioTrack != null) return
+    private fun initializeInternal(): Boolean {
+        if (audioTrack != null) return true
 
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AUDIO_FORMAT)
-                    .setSampleRate(SAMPLE_RATE)
-                    .setChannelMask(CHANNEL_CONFIG)
-                    .build()
-            )
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        return try {
+            audioTrack = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AUDIO_FORMAT)
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(CHANNEL_CONFIG)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+
+            // Verify initialization succeeded
+            audioTrack?.state == AudioTrack.STATE_INITIALIZED
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize AudioTrack", e)
+            audioTrack = null
+            false
+        }
     }
 
     /**
-     * Start playback.
+     * Start playback (internal, called with mutex held).
      */
-    fun start() {
-        if (isPlaying.get()) return
+    private fun startInternal(): Boolean {
+        if (isPlaying.get()) return true
 
-        initialize()
-        audioTrack?.play()
-        isPlaying.set(true)
+        if (!initializeInternal()) {
+            return false
+        }
+
+        return try {
+            val track = audioTrack
+            if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
+                track.play()
+                isPlaying.set(true)
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start AudioTrack", e)
+            false
+        }
     }
 
     /**
@@ -78,7 +107,7 @@ class AudioPlayer {
             audioQueue.offer(pcmData)
             playQueuedAudio()
         } catch (e: Exception) {
-            // Ignore decoding errors
+            Log.e(TAG, "Error queueing audio", e)
         }
     }
 
@@ -90,14 +119,30 @@ class AudioPlayer {
         playQueuedAudio()
     }
 
-    private fun playQueuedAudio() {
-        if (!isPlaying.get()) {
-            start()
-        }
+    private suspend fun playQueuedAudio() {
+        mutex.withLock {
+            if (!isPlaying.get()) {
+                if (!startInternal()) {
+                    // Failed to start, clear queue and return
+                    audioQueue.clear()
+                    return
+                }
+            }
 
-        while (audioQueue.isNotEmpty()) {
-            val data = audioQueue.poll() ?: break
-            audioTrack?.write(data, 0, data.size)
+            val track = audioTrack
+            if (track == null || track.state != AudioTrack.STATE_INITIALIZED) {
+                audioQueue.clear()
+                return
+            }
+
+            try {
+                while (audioQueue.isNotEmpty()) {
+                    val data = audioQueue.poll() ?: break
+                    track.write(data, 0, data.size)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error writing audio data", e)
+            }
         }
     }
 
@@ -113,10 +158,15 @@ class AudioPlayer {
         isPlaying.set(false)
         audioQueue.clear()
         try {
-            audioTrack?.pause()
-            audioTrack?.flush()
+            val track = audioTrack
+            if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
+                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    track.pause()
+                }
+                track.flush()
+            }
         } catch (e: Exception) {
-            // Ignore errors when stopping
+            Log.e(TAG, "Error stopping AudioTrack", e)
         }
     }
 
@@ -125,7 +175,11 @@ class AudioPlayer {
      */
     fun release() {
         stop()
-        audioTrack?.release()
+        try {
+            audioTrack?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing AudioTrack", e)
+        }
         audioTrack = null
     }
 
@@ -135,6 +189,13 @@ class AudioPlayer {
      */
     fun clearQueue() {
         audioQueue.clear()
-        audioTrack?.flush()
+        try {
+            val track = audioTrack
+            if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
+                track.flush()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error flushing AudioTrack", e)
+        }
     }
 }
