@@ -3,6 +3,7 @@ package com.example.aialarmclock.ai
 import android.content.Context
 import com.example.aialarmclock.speech.AudioPlayer
 import com.example.aialarmclock.speech.AudioStreamer
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -69,6 +70,7 @@ class RealtimeAudioClient(
         .build()
 
     companion object {
+        private const val TAG = "RealtimeAudioClient"
         private const val REALTIME_API_URL =
             "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
 
@@ -167,22 +169,35 @@ Start by greeting them and asking how they slept."""
      * Start streaming audio from the microphone.
      */
     fun startListening() {
-        if (audioStreamJob?.isActive == true) return
+        Log.d(TAG, "startListening called, audioStreamJob active: ${audioStreamJob?.isActive}")
+        if (audioStreamJob?.isActive == true) {
+            Log.d(TAG, "Already listening, returning")
+            return
+        }
 
         // If AI is speaking, interrupt it
         if (_isAiSpeaking.value) {
+            Log.d(TAG, "AI is speaking, interrupting")
             interruptAi()
         }
 
+        Log.d(TAG, "Starting audio stream job")
         audioStreamJob = scope.launch {
             try {
+                var chunkCount = 0
                 audioStreamer.startStreaming().collect { base64Audio ->
+                    chunkCount++
+                    if (chunkCount % 10 == 1) {  // Log every 10th chunk to avoid spam
+                        Log.d(TAG, "Sending audio chunk #$chunkCount, size: ${base64Audio.length}")
+                    }
                     sendAudioChunk(base64Audio)
                 }
+                Log.d(TAG, "Audio streaming completed normally, sent $chunkCount chunks")
             } catch (e: SecurityException) {
-                // Microphone permission not granted
+                Log.e(TAG, "Microphone permission not granted", e)
                 _events.emit(ConversationEvent.Error("Microphone permission required"))
             } catch (e: Exception) {
+                Log.e(TAG, "Audio streaming error", e)
                 _events.emit(ConversationEvent.Error("Audio error: ${e.message}"))
             }
         }
@@ -226,6 +241,11 @@ Start by greeting them and asking how they slept."""
         try {
             val event = json.parseToJsonElement(eventJson).jsonObject
             val type = event["type"]?.jsonPrimitive?.content ?: return
+
+            // Log all event types except frequent audio deltas
+            if (type != "response.audio.delta" && type != "response.audio_transcript.delta") {
+                Log.d(TAG, "Server event: $type")
+            }
 
             when (type) {
                 "session.created" -> {

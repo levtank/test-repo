@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Base64
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -27,6 +28,7 @@ class AudioStreamer(private val context: Context) {
     private var isStreaming = false
 
     companion object {
+        private const val TAG = "AudioStreamer"
         const val SAMPLE_RATE = 24000  // 24kHz required by OpenAI Realtime API
         const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
@@ -59,10 +61,13 @@ class AudioStreamer(private val context: Context) {
      * Returns a Flow of base64-encoded PCM audio chunks.
      */
     fun startStreaming(): Flow<String> = flow {
+        Log.d(TAG, "startStreaming called, hasPermission: ${hasPermission()}")
         if (!hasPermission()) {
+            Log.e(TAG, "Microphone permission not granted!")
             throw SecurityException("Microphone permission not granted")
         }
 
+        Log.d(TAG, "Creating AudioRecord with sampleRate=$SAMPLE_RATE, bufferSize=$bufferSize")
         audioRecord = AudioRecord(
             MediaRecorder.AudioSource.MIC,
             SAMPLE_RATE,
@@ -72,21 +77,26 @@ class AudioStreamer(private val context: Context) {
         )
 
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioRecord failed to initialize, state: ${audioRecord?.state}")
             audioRecord?.release()
             audioRecord = null
             throw IllegalStateException("Failed to initialize AudioRecord")
         }
 
+        Log.d(TAG, "AudioRecord initialized successfully")
         val buffer = ByteArray(chunkSize)
         isStreaming = true
 
         try {
             audioRecord?.startRecording()
+            Log.d(TAG, "AudioRecord started recording")
 
+            var chunkCount = 0
             while (coroutineContext.isActive && isStreaming) {
                 val bytesRead = audioRecord?.read(buffer, 0, chunkSize) ?: -1
 
                 if (bytesRead > 0) {
+                    chunkCount++
                     // Encode PCM data as base64 for WebSocket transmission
                     val base64Audio = if (bytesRead == chunkSize) {
                         Base64.encodeToString(buffer, Base64.NO_WRAP)
@@ -95,12 +105,16 @@ class AudioStreamer(private val context: Context) {
                     }
                     emit(base64Audio)
                 } else if (bytesRead == AudioRecord.ERROR_INVALID_OPERATION) {
+                    Log.e(TAG, "AudioRecord ERROR_INVALID_OPERATION")
                     throw IllegalStateException("AudioRecord not properly initialized")
                 } else if (bytesRead == AudioRecord.ERROR_BAD_VALUE) {
+                    Log.e(TAG, "AudioRecord ERROR_BAD_VALUE")
                     throw IllegalStateException("Invalid AudioRecord parameters")
                 }
             }
+            Log.d(TAG, "Streaming loop ended, sent $chunkCount chunks")
         } finally {
+            Log.d(TAG, "Stopping AudioRecord")
             stopInternal()
         }
     }.flowOn(Dispatchers.IO)
