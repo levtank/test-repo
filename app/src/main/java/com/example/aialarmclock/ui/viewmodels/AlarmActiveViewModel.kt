@@ -3,36 +3,38 @@ package com.example.aialarmclock.ui.viewmodels
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.aialarmclock.ai.QuestionGenerator
+import com.example.aialarmclock.ai.RealtimeAudioClient
 import com.example.aialarmclock.data.local.AlarmDatabase
 import com.example.aialarmclock.data.preferences.UserPreferences
 import com.example.aialarmclock.data.repository.ResponseRepository
-import com.example.aialarmclock.speech.AudioRecorder
-import com.example.aialarmclock.speech.WhisperApiClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.io.File
 
 enum class AlarmState {
-    RINGING,           // Alarm is ringing, waiting for user to tap button
-    LOADING,           // Generating question
-    SPEAKING,          // TTS is speaking the question
-    RECORDING,         // Recording user's voice response
-    TRANSCRIBING,      // Sending audio to Whisper API
-    COMPLETED,         // All done, dismiss alarm
-    ERROR              // Something went wrong
+    RINGING,        // Alarm is ringing, waiting for user to tap button
+    CONNECTING,     // Connecting to OpenAI Realtime API
+    CONVERSING,     // Active conversation
+    ENDING,         // Saving conversation and ending
+    COMPLETED,      // All done, dismiss alarm
+    ERROR           // Something went wrong
 }
+
+data class TranscriptEntry(
+    val role: String,  // "user" or "assistant"
+    val text: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 data class AlarmActiveUiState(
     val state: AlarmState = AlarmState.RINGING,
-    val question: String = "",
-    val transcribedResponse: String = "",
-    val recordingDuration: Long = 0L,  // Recording time in seconds
-    val errorMessage: String? = null,
-    val wakePhrase: String = ""
+    val transcript: List<TranscriptEntry> = emptyList(),
+    val currentAiText: String = "",  // Streaming AI response
+    val isAiSpeaking: Boolean = false,
+    val isUserSpeaking: Boolean = false,
+    val errorMessage: String? = null
 )
 
 class AlarmActiveViewModel(application: Application) : AndroidViewModel(application) {
@@ -40,170 +42,186 @@ class AlarmActiveViewModel(application: Application) : AndroidViewModel(applicat
     private val database = AlarmDatabase.getDatabase(application)
     private val responseRepository = ResponseRepository(database.responseDao())
     private val userPreferences = UserPreferences(application)
-    private val audioRecorder = AudioRecorder(application)
 
     private val _uiState = MutableStateFlow(AlarmActiveUiState())
     val uiState: StateFlow<AlarmActiveUiState> = _uiState.asStateFlow()
 
-    private var currentQuestion: String = ""
-    private var recordedAudioFile: File? = null
+    private var realtimeClient: RealtimeAudioClient? = null
 
     /**
-     * Called when user taps button to stop the ringing
+     * Called when user taps button to stop the ringing.
+     * Starts the conversation with OpenAI.
      */
-    fun onWakePhrase(phrase: String) {
-        _uiState.value = _uiState.value.copy(wakePhrase = phrase)
-        loadQuestion()
-    }
-
-    fun loadQuestion() {
+    fun onWakeButtonPressed() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(state = AlarmState.LOADING)
+            _uiState.value = _uiState.value.copy(state = AlarmState.CONNECTING)
 
-            try {
-                val alarm = database.alarmDao().getAlarmOnce()
-                val apiKey = userPreferences.apiKey.first()
+            val openAiKey = userPreferences.openAiApiKey.first()
 
-                val questionGenerator = QuestionGenerator(apiKey)
-
-                val question = if (alarm != null) {
-                    questionGenerator.generateQuestion(alarm)
-                } else {
-                    QuestionGenerator.DEFAULT_QUESTION
-                }
-
-                currentQuestion = question
-                _uiState.value = _uiState.value.copy(
-                    state = AlarmState.SPEAKING,
-                    question = question
-                )
-            } catch (e: Exception) {
-                currentQuestion = QuestionGenerator.DEFAULT_QUESTION
-                _uiState.value = _uiState.value.copy(
-                    state = AlarmState.SPEAKING,
-                    question = QuestionGenerator.DEFAULT_QUESTION
-                )
-            }
-        }
-    }
-
-    fun onSpeakingComplete() {
-        startRecording()
-    }
-
-    fun onSpeakingError() {
-        // Still proceed to recording even if TTS fails
-        startRecording()
-    }
-
-    private fun startRecording() {
-        try {
-            recordedAudioFile = audioRecorder.startRecording()
-            _uiState.value = _uiState.value.copy(
-                state = AlarmState.RECORDING,
-                recordingDuration = 0L
-            )
-        } catch (e: Exception) {
-            _uiState.value = _uiState.value.copy(
-                state = AlarmState.ERROR,
-                errorMessage = "Failed to start recording: ${e.message}"
-            )
-        }
-    }
-
-    /**
-     * Update the recording duration display
-     */
-    fun updateRecordingDuration(seconds: Long) {
-        if (_uiState.value.state == AlarmState.RECORDING) {
-            _uiState.value = _uiState.value.copy(recordingDuration = seconds)
-        }
-    }
-
-    /**
-     * Called when user taps "Done" to finish recording
-     */
-    fun finishRecording() {
-        viewModelScope.launch {
-            val audioFile = audioRecorder.stopRecording()
-
-            if (audioFile == null || !audioFile.exists()) {
+            if (openAiKey.isNullOrBlank()) {
                 _uiState.value = _uiState.value.copy(
                     state = AlarmState.ERROR,
-                    errorMessage = "Recording failed - no audio file"
+                    errorMessage = "OpenAI API key not configured. Please add it in Settings."
                 )
                 return@launch
             }
 
-            _uiState.value = _uiState.value.copy(state = AlarmState.TRANSCRIBING)
-
             try {
-                val openAiKey = userPreferences.openAiApiKey.first()
-
-                if (openAiKey.isNullOrBlank()) {
-                    _uiState.value = _uiState.value.copy(
-                        state = AlarmState.ERROR,
-                        errorMessage = "OpenAI API key not configured. Please add it in Settings."
-                    )
-                    return@launch
-                }
-
-                val whisperClient = WhisperApiClient(openAiKey)
-                val transcription = whisperClient.transcribe(audioFile)
-
-                _uiState.value = _uiState.value.copy(transcribedResponse = transcription)
-
-                // Save the response
-                responseRepository.saveResponse(
-                    question = currentQuestion,
-                    response = transcription.ifBlank { "(No speech detected)" }
-                )
-
-                // Clean up audio file
-                audioFile.delete()
-
-                _uiState.value = _uiState.value.copy(state = AlarmState.COMPLETED)
-
+                realtimeClient = RealtimeAudioClient(getApplication(), openAiKey)
+                setupEventListeners()
+                realtimeClient?.connect()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     state = AlarmState.ERROR,
-                    errorMessage = "Transcription failed: ${e.message}"
+                    errorMessage = "Failed to connect: ${e.message}"
                 )
             }
         }
     }
 
-    fun retryRecording() {
-        // Clean up any existing recording
-        audioRecorder.cancelRecording()
-        recordedAudioFile?.delete()
+    private fun setupEventListeners() {
+        val client = realtimeClient ?: return
 
-        // Start fresh
-        startRecording()
+        // Observe connection state
+        viewModelScope.launch {
+            client.connectionState.collect { state ->
+                when (state) {
+                    RealtimeAudioClient.ConnectionState.CONNECTED -> {
+                        _uiState.value = _uiState.value.copy(state = AlarmState.CONVERSING)
+                    }
+                    RealtimeAudioClient.ConnectionState.DISCONNECTED -> {
+                        if (_uiState.value.state == AlarmState.CONVERSING) {
+                            // Unexpected disconnect
+                            _uiState.value = _uiState.value.copy(
+                                state = AlarmState.ERROR,
+                                errorMessage = "Connection lost"
+                            )
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+
+        // Observe AI speaking state
+        viewModelScope.launch {
+            client.isAiSpeaking.collect { isSpeaking ->
+                _uiState.value = _uiState.value.copy(isAiSpeaking = isSpeaking)
+            }
+        }
+
+        // Observe conversation events
+        viewModelScope.launch {
+            client.events.collect { event ->
+                handleConversationEvent(event)
+            }
+        }
     }
 
-    fun skipQuestion() {
-        viewModelScope.launch {
-            // Stop any ongoing recording
-            audioRecorder.cancelRecording()
-            recordedAudioFile?.delete()
+    private fun handleConversationEvent(event: RealtimeAudioClient.ConversationEvent) {
+        when (event) {
+            is RealtimeAudioClient.ConversationEvent.UserSpeechStarted -> {
+                _uiState.value = _uiState.value.copy(isUserSpeaking = true)
+            }
 
-            // Save with empty response
+            is RealtimeAudioClient.ConversationEvent.UserSpeechEnded -> {
+                _uiState.value = _uiState.value.copy(isUserSpeaking = false)
+            }
+
+            is RealtimeAudioClient.ConversationEvent.UserMessage -> {
+                val newEntry = TranscriptEntry(role = "user", text = event.text)
+                _uiState.value = _uiState.value.copy(
+                    transcript = _uiState.value.transcript + newEntry,
+                    isUserSpeaking = false
+                )
+            }
+
+            is RealtimeAudioClient.ConversationEvent.AiTranscriptDelta -> {
+                _uiState.value = _uiState.value.copy(
+                    currentAiText = _uiState.value.currentAiText + event.delta
+                )
+            }
+
+            is RealtimeAudioClient.ConversationEvent.AiMessage -> {
+                val newEntry = TranscriptEntry(role = "assistant", text = event.text)
+                _uiState.value = _uiState.value.copy(
+                    transcript = _uiState.value.transcript + newEntry,
+                    currentAiText = ""
+                )
+            }
+
+            is RealtimeAudioClient.ConversationEvent.Error -> {
+                _uiState.value = _uiState.value.copy(
+                    state = AlarmState.ERROR,
+                    errorMessage = event.message
+                )
+            }
+
+            else -> {}
+        }
+    }
+
+    /**
+     * End the conversation and save the transcript.
+     */
+    fun endConversation() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(state = AlarmState.ENDING)
+
+            realtimeClient?.endConversation()
+
+            // Build full transcript for saving
+            val transcript = _uiState.value.transcript
+            val fullTranscript = transcript.joinToString("\n\n") { entry ->
+                val role = if (entry.role == "user") "You" else "AI"
+                "$role: ${entry.text}"
+            }
+
+            // Save to database
             try {
                 responseRepository.saveResponse(
-                    question = currentQuestion,
+                    question = "Morning Reflection Conversation",
+                    response = fullTranscript.ifBlank { "(No conversation recorded)" }
+                )
+            } catch (e: Exception) {
+                // Ignore save errors
+            }
+
+            _uiState.value = _uiState.value.copy(state = AlarmState.COMPLETED)
+        }
+    }
+
+    /**
+     * Skip the conversation entirely.
+     */
+    fun skipConversation() {
+        viewModelScope.launch {
+            realtimeClient?.endConversation()
+
+            try {
+                responseRepository.saveResponse(
+                    question = "Morning Reflection",
                     response = "(Skipped)"
                 )
             } catch (e: Exception) {
                 // Ignore save errors
             }
+
             _uiState.value = _uiState.value.copy(state = AlarmState.COMPLETED)
         }
     }
 
+    /**
+     * Retry connection after an error.
+     */
+    fun retry() {
+        realtimeClient?.release()
+        realtimeClient = null
+        _uiState.value = AlarmActiveUiState(state = AlarmState.RINGING)
+    }
+
     override fun onCleared() {
         super.onCleared()
-        audioRecorder.release()
-        audioRecorder.cleanupOldRecordings()
+        realtimeClient?.release()
     }
 }

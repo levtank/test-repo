@@ -17,41 +17,48 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.aialarmclock.service.AlarmForegroundService
-import com.example.aialarmclock.speech.TextToSpeechManager
 import com.example.aialarmclock.ui.theme.AIAlarmClockTheme
 import com.example.aialarmclock.ui.viewmodels.AlarmActiveViewModel
 import com.example.aialarmclock.ui.viewmodels.AlarmState
-import kotlinx.coroutines.delay
+import com.example.aialarmclock.ui.viewmodels.TranscriptEntry
 
 class AlarmActiveActivity : ComponentActivity() {
 
@@ -124,10 +131,10 @@ class AlarmActiveActivity : ComponentActivity() {
         }
     }
 
-    // Prevent back button from dismissing without answering
+    // Prevent back button from dismissing without ending conversation
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        // Do nothing - must answer to dismiss
+        // Do nothing - must complete conversation to dismiss
     }
 }
 
@@ -138,41 +145,6 @@ fun AlarmActiveScreen(
     onDismiss: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val context = LocalContext.current
-
-    // Initialize TTS manager
-    val ttsManager = remember { TextToSpeechManager(context) }
-
-    // Cleanup on dispose
-    DisposableEffect(Unit) {
-        onDispose {
-            ttsManager.shutdown()
-        }
-    }
-
-    // Handle TTS when question is ready
-    LaunchedEffect(uiState.state, uiState.question) {
-        if (uiState.state == AlarmState.SPEAKING && uiState.question.isNotEmpty()) {
-            val success = ttsManager.speak(uiState.question)
-            if (success) {
-                viewModel.onSpeakingComplete()
-            } else {
-                viewModel.onSpeakingError()
-            }
-        }
-    }
-
-    // Update recording duration timer
-    LaunchedEffect(uiState.state) {
-        if (uiState.state == AlarmState.RECORDING) {
-            var seconds = 0L
-            while (true) {
-                delay(1000)
-                seconds++
-                viewModel.updateRecordingDuration(seconds)
-            }
-        }
-    }
 
     // Dismiss when completed
     LaunchedEffect(uiState.state) {
@@ -181,44 +153,36 @@ fun AlarmActiveScreen(
         }
     }
 
-    // UI
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            when (uiState.state) {
-                AlarmState.RINGING -> RingingState(
-                    onStopAlarm = {
-                        onStopAlarmSound()
-                        viewModel.onWakePhrase("Button pressed")
-                    }
-                )
-                AlarmState.LOADING -> LoadingState()
-                AlarmState.SPEAKING -> SpeakingState(question = uiState.question)
-                AlarmState.RECORDING -> RecordingState(
-                    question = uiState.question,
-                    durationSeconds = uiState.recordingDuration,
-                    onDone = { viewModel.finishRecording() }
-                )
-                AlarmState.TRANSCRIBING -> TranscribingState()
-                AlarmState.ERROR -> ErrorState(
-                    errorMessage = uiState.errorMessage ?: "Something went wrong",
-                    onRetry = { viewModel.retryRecording() },
-                    onSkip = { viewModel.skipQuestion() }
-                )
-                AlarmState.COMPLETED -> {
-                    // Will dismiss automatically
-                    Text("Done!")
+        when (uiState.state) {
+            AlarmState.RINGING -> RingingState(
+                onStopAlarm = {
+                    onStopAlarmSound()
+                    viewModel.onWakeButtonPressed()
                 }
+            )
+            AlarmState.CONNECTING -> ConnectingState()
+            AlarmState.CONVERSING -> ConversationState(
+                transcript = uiState.transcript,
+                currentAiText = uiState.currentAiText,
+                isAiSpeaking = uiState.isAiSpeaking,
+                isUserSpeaking = uiState.isUserSpeaking,
+                onEndConversation = { viewModel.endConversation() }
+            )
+            AlarmState.ENDING -> EndingState()
+            AlarmState.ERROR -> ErrorState(
+                errorMessage = uiState.errorMessage ?: "Something went wrong",
+                onRetry = { viewModel.retry() },
+                onSkip = { viewModel.skipConversation() }
+            )
+            AlarmState.COMPLETED -> {
+                // Will dismiss automatically
+                Text("Done!")
             }
         }
     }
@@ -239,6 +203,7 @@ private fun RingingState(onStopAlarm: () -> Unit) {
     )
 
     Column(
+        modifier = Modifier.padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(
@@ -275,7 +240,7 @@ private fun RingingState(onStopAlarm: () -> Unit) {
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Tap to stop alarm and answer a question",
+            text = "Tap to stop alarm and start your morning reflection",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
@@ -284,8 +249,9 @@ private fun RingingState(onStopAlarm: () -> Unit) {
 }
 
 @Composable
-private fun LoadingState() {
+private fun ConnectingState() {
     Column(
+        modifier = Modifier.padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         CircularProgressIndicator(
@@ -294,45 +260,12 @@ private fun LoadingState() {
         )
         Spacer(modifier = Modifier.height(24.dp))
         Text(
-            text = "Preparing your question...",
-            style = MaterialTheme.typography.bodyLarge
+            text = "Connecting...",
+            style = MaterialTheme.typography.titleMedium
         )
-    }
-}
-
-@Composable
-private fun SpeakingState(question: String) {
-    val scale by animateFloatAsState(
-        targetValue = 1.1f,
-        animationSpec = tween(500),
-        label = "scale"
-    )
-
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(
-            imageVector = Icons.Default.VolumeUp,
-            contentDescription = "Speaking",
-            modifier = Modifier
-                .size(80.dp)
-                .scale(scale),
-            tint = MaterialTheme.colorScheme.primary
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = question,
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 16.dp)
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "Listening...",
+            text = "Preparing your morning reflection",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -340,122 +273,226 @@ private fun SpeakingState(question: String) {
 }
 
 @Composable
-private fun RecordingState(
-    question: String,
-    durationSeconds: Long,
-    onDone: () -> Unit
+private fun ConversationState(
+    transcript: List<TranscriptEntry>,
+    currentAiText: String,
+    isAiSpeaking: Boolean,
+    isUserSpeaking: Boolean,
+    onEndConversation: () -> Unit
 ) {
-    val pulseScale by animateFloatAsState(
-        targetValue = 1.2f,
-        animationSpec = tween(600),
-        label = "pulse"
-    )
+    val listState = rememberLazyListState()
 
-    // Format duration as MM:SS
-    val minutes = durationSeconds / 60
-    val seconds = durationSeconds % 60
-    val durationText = String.format("%02d:%02d", minutes, seconds)
+    // Auto-scroll to bottom when new messages arrive
+    LaunchedEffect(transcript.size, currentAiText) {
+        if (transcript.isNotEmpty() || currentAiText.isNotEmpty()) {
+            listState.animateScrollToItem(
+                index = maxOf(0, transcript.size - 1 + if (currentAiText.isNotEmpty()) 1 else 0)
+            )
+        }
+    }
 
     Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
     ) {
-        // Question at the top
-        Text(
-            text = question,
-            style = MaterialTheme.typography.titleMedium,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp)
-        )
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        // Recording indicator
-        Icon(
-            imageVector = Icons.Default.Mic,
-            contentDescription = "Recording",
-            modifier = Modifier
-                .size(100.dp)
-                .scale(pulseScale),
-            tint = MaterialTheme.colorScheme.error
+        // Speaking indicator
+        SpeakingIndicator(
+            isAiSpeaking = isAiSpeaking,
+            isUserSpeaking = isUserSpeaking
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Recording duration
-        Text(
-            text = durationText,
-            style = MaterialTheme.typography.displaySmall,
-            color = MaterialTheme.colorScheme.error
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "Recording...",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.error
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Encouraging text
-        Text(
-            text = "Share your thoughts... take your time",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.primary,
-            textAlign = TextAlign.Center
-        )
-
-        Text(
-            text = "Tap 'Done' when you're finished",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        // Done button
-        Button(
-            onClick = onDone,
+        // Transcript
+        LazyColumn(
+            state = listState,
             modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .height(56.dp)
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Done",
-                style = MaterialTheme.typography.titleMedium
-            )
+            items(transcript) { entry ->
+                TranscriptBubble(entry = entry)
+            }
+
+            // Show streaming AI text
+            if (currentAiText.isNotEmpty()) {
+                item {
+                    TranscriptBubble(
+                        entry = TranscriptEntry(
+                            role = "assistant",
+                            text = currentAiText
+                        ),
+                        isStreaming = true
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+
+        // End conversation button
+        Button(
+            onClick = onEndConversation,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondary
+            )
+        ) {
+            Text(
+                text = "End Conversation",
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
     }
 }
 
 @Composable
-private fun TranscribingState() {
+private fun SpeakingIndicator(
+    isAiSpeaking: Boolean,
+    isUserSpeaking: Boolean
+) {
+    val indicatorScale by animateFloatAsState(
+        targetValue = if (isAiSpeaking || isUserSpeaking) 1.1f else 1f,
+        animationSpec = tween(300),
+        label = "indicator_scale"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        when {
+            isAiSpeaking -> {
+                Icon(
+                    imageVector = Icons.Default.VolumeUp,
+                    contentDescription = "AI speaking",
+                    modifier = Modifier
+                        .size(24.dp)
+                        .scale(indicatorScale),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "AI is speaking...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            isUserSpeaking -> {
+                Icon(
+                    imageVector = Icons.Default.Mic,
+                    contentDescription = "Listening",
+                    modifier = Modifier
+                        .size(24.dp)
+                        .scale(indicatorScale),
+                    tint = MaterialTheme.colorScheme.error
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Listening...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            else -> {
+                Text(
+                    text = "Speak naturally - I'm listening",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranscriptBubble(
+    entry: TranscriptEntry,
+    isStreaming: Boolean = false
+) {
+    val isUser = entry.role == "user"
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(0.85f),
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = if (isUser) 16.dp else 4.dp,
+                bottomEnd = if (isUser) 4.dp else 16.dp
+            ),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isUser)
+                    MaterialTheme.colorScheme.primaryContainer
+                else
+                    MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp)
+            ) {
+                Text(
+                    text = if (isUser) "You" else "AI",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isUser)
+                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = entry.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isUser)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (isStreaming) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EndingState() {
     Column(
+        modifier = Modifier.padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         CircularProgressIndicator(
             modifier = Modifier.size(64.dp),
             strokeWidth = 4.dp
         )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
+        Spacer(modifier = Modifier.height(24.dp))
         Text(
-            text = "Transcribing your reflection...",
+            text = "Saving your reflection...",
             style = MaterialTheme.typography.titleMedium
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "This may take a moment",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
@@ -467,6 +504,7 @@ private fun ErrorState(
     onSkip: () -> Unit
 ) {
     Column(
+        modifier = Modifier.padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
