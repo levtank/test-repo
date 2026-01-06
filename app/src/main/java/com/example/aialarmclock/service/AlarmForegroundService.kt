@@ -27,6 +27,7 @@ class AlarmForegroundService : Service() {
     private var vibrator: Vibrator? = null
     private val binder = LocalBinder()
     private var alarmSoundStopped = false  // Track if sound was intentionally stopped
+    private var activityLaunched = false   // Track if activity was already launched
 
     inner class LocalBinder : Binder() {
         fun getService(): AlarmForegroundService = this@AlarmForegroundService
@@ -51,8 +52,12 @@ class AlarmForegroundService : Service() {
             startVibration()
         }
 
-        // Launch the fullscreen alarm activity
-        launchAlarmActivity()
+        // Only launch activity once - prevents resetting conversation state
+        // if service is restarted by the system
+        if (!activityLaunched) {
+            activityLaunched = true
+            launchAlarmActivity()
+        }
 
         return START_STICKY
     }
